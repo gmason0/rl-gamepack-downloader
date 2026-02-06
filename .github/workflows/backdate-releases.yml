@@ -1,0 +1,78 @@
+name: Backdate Missing Releases
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backdate-releases:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Fetch existing releases and backdate missing ones
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          jar_base_url="https://repo.runelite.net/net/runelite/injected-client"
+          
+          echo "Fetching existing releases..."
+          existing_releases=$(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+          
+          echo "Reading versions from versions.json..."
+          all_versions=$(jq -r '.versions[]' versions.json)
+          
+          echo "Checking for versions without releases..."
+          echo ""
+          
+          missing_releases_count=0
+          
+          for version in $all_versions; do
+            tag_name="${version}"
+
+            if echo "$existing_releases" | grep -qx "$tag_name"; then
+              echo "Release already exists for version $version, skipping..."
+              continue
+            fi
+            
+            echo "Processing version: $version"
+            
+            jar_url="${jar_base_url}/${version}/injected-client-${version}.jar"
+            jar_file="injected-client-${version}.jar"
+
+
+            echo "  Downloading: $jar_url"
+            
+            if curl -f -L -o "$jar_file" "$jar_url" 2>/dev/null; then
+              echo "  Downloaded: $jar_file"
+            else
+              echo "  Failed to download: $jar_url (might not exist)"
+              rm -f "$jar_file"
+              continue
+            fi
+            
+            
+            echo "  Creating release for version $version"
+            
+            gh release create "$tag_name" \
+              --title "RuneLite Injected Client ${version}" \
+              --notes "Downloaded from: https://repo.runelite.net/net/runelite/injected-client/${version}/injected-client-${version}.jar" \
+              "$jar_file"
+            
+            if [ $? -eq 0 ]; then
+              echo "  Created release for $version"
+              missing_releases_count=$((missing_releases_count + 1))
+            else
+              echo "  Failed to create release for $version"
+            fi
+            
+            
+            rm -f "$jar_file"
+            
+            echo ""
+          done
+          
+          echo "Backdate complete! Created $missing_releases_count new release(s)."
