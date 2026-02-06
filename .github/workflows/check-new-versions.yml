@@ -1,0 +1,84 @@
+name: Check for New RuneLite Versions
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Check for new versions
+        id: check_versions
+        run: |
+          echo "Fetching tags from GitHub API..."
+          tags_json=$(curl -s "https://api.github.com/repos/runelite/runelite/tags")
+          
+          existing_versions=$(jq -r '.versions[]' versions.json)
+          
+          new_version=""
+          while IFS= read -r tag; do
+            version="${tag#runelite-parent-}"
+            
+            if ! echo "$existing_versions" | grep -qx "$version"; then
+              echo "Found new version: $version"
+              new_version="$version"
+              break
+            fi
+          done < <(echo "$tags_json" | jq -r '.[].name' | grep "^runelite-parent-")
+          
+          if [ -n "$new_version" ]; then
+            echo "new_version=$new_version" >> $GITHUB_OUTPUT
+            echo "has_new_version=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_new_version=false" >> $GITHUB_OUTPUT
+            echo "No new versions found."
+          fi
+      
+      - name: Download JAR and create release
+        if: steps.check_versions.outputs.has_new_version == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.check_versions.outputs.new_version }}
+        run: |
+          jar_base_url="https://repo.runelite.net/net/runelite/injected-client"
+          jar_url="${jar_base_url}/${VERSION}/injected-client-${VERSION}.jar"
+          jar_file="injected-client-${VERSION}.jar"
+          
+          echo "Processing version: $VERSION"
+          
+          echo "Downloading: $jar_url"
+          if ! curl -f -L -o "$jar_file" "$jar_url" 2>/dev/null; then
+            echo "Failed to download: $jar_url"
+            rm -f "$jar_file"
+            exit 1
+          fi
+          
+          echo "Downloaded: $jar_file"
+          
+          jq --arg version "$VERSION" '.versions = [$version] + .versions | .versions |= unique' \
+            versions.json > versions.json.tmp
+          mv versions.json.tmp versions.json
+          
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add versions.json
+          git commit -m "Add RuneLite version ${VERSION}"
+          git push
+          
+          echo "Creating release for version $VERSION"
+          gh release create "${VERSION}" \
+            --title "RuneLite Injected Client ${VERSION}" \
+            --notes "Downloaded from: https://repo.runelite.net/net/runelite/injected-client/${VERSION}/injected-client-${VERSION}.jar" \
+            "$jar_file"
+          
+          echo "Created release for $VERSION"
